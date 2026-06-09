@@ -1,7 +1,9 @@
 # llingr-logger-zap
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/llingr/llingr-logger-zap.svg)](https://pkg.go.dev/github.com/llingr/llingr-logger-zap)
-[![Go Report Card](https://goreportcard.com/badge/github.com/llingr/llingr-logger-zap)](https://goreportcard.com/report/github.com/llingr/llingr-logger-zap)
+[![CI](https://github.com/llingr/llingr-logger-zap/actions/workflows/ci.yml/badge.svg)](https://github.com/llingr/llingr-logger-zap/actions/workflows/ci.yml)
+[![Lint](https://github.com/llingr/llingr-logger-zap/actions/workflows/lint.yml/badge.svg)](https://github.com/llingr/llingr-logger-zap/actions/workflows/lint.yml)
+[![Coverage](https://codecov.io/gh/llingr/llingr-logger-zap/branch/main/graph/badge.svg)](https://codecov.io/gh/llingr/llingr-logger-zap)
 [![Tag](https://img.shields.io/github/v/tag/llingr/llingr-logger-zap)](https://github.com/llingr/llingr-logger-zap/tags)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/llingr/llingr-logger-zap)](go.mod)
