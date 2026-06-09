@@ -7,7 +7,8 @@
 //
 //   - Arguments: the message is logged verbatim (never fmt.Sprintf'd); the
 //     variadic args become structured fields, as native zap.Field values or
-//     loose key/value pairs, mixed freely. See toFields.
+//     loose key/value pairs, mixed freely. A bare error becomes an "error"
+//     field, as in zap's SugaredLogger. See toFields.
 //   - Call site: the constructors enable caller capture and skip this package's
 //     own frame, so zap records the application's file and line, not this
 //     package's. No zap.AddCaller() on the host logger is required. Pass
@@ -55,7 +56,12 @@ var _ nexus.Logger = (*Logger)(nil)
 // The caller field still only appears if the encoder is configured to emit it
 // (a CallerKey in the encoder config, as zap's production/development presets set
 // by default). New cannot control the encoder, only the logger.
+//
+// New panics if z is nil: this package wires an existing logger.
 func New(z *zap.Logger, opts ...Option) *Logger {
+	if z == nil {
+		panic("zaplogger: New requires a non-nil *zap.Logger")
+	}
 	l := &Logger{}
 	for _, opt := range opts {
 		opt(l)
@@ -70,8 +76,11 @@ func New(z *zap.Logger, opts ...Option) *Logger {
 
 // NewSugared wraps an existing *zap.SugaredLogger. It desugars to the underlying
 // *zap.Logger, so the typed field path is restored and call-site transparency is
-// preserved. Options are applied as in New.
+// preserved. Options are applied as in New. Like New, it panics if s is nil.
 func NewSugared(s *zap.SugaredLogger, opts ...Option) *Logger {
+	if s == nil {
+		panic("zaplogger: NewSugared requires a non-nil *zap.SugaredLogger")
+	}
 	return New(s.Desugar(), opts...)
 }
 
@@ -112,15 +121,42 @@ func (l *Logger) WithContextExtractor(extract ContextExtractor) *Logger {
 // Other platforms may report a different errno for the same situation (Linux, for
 // instance, can return EINVAL), which is deliberately passed through to avoid
 // masking a genuine EINVAL from a real sink.
+//
+// With a multi-sink logger (zapcore.NewTee) zap combines the per-core Sync errors
+// into one multi-error. Suppression requires that EVERY constituent is ENOTTY: if
+// a console reports ENOTTY and a file sink reports a real fsync failure in the
+// same Sync, the combined error is returned, not swallowed.
 func (l *Logger) Sync() error {
 	err := l.z.Sync()
-	if err != nil && errors.Is(err, syscall.ENOTTY) {
+	if err == nil || l.syncRawENOTTY {
+		return err
+	}
+	if allENOTTY(err) {
 		// console sink can't fsync; not a real failure, so swallow it by default
-		if !l.syncRawENOTTY {
-			return nil
-		}
+		return nil
 	}
 	return err
+}
+
+// allENOTTY reports whether every leaf of err's wrapping tree is ENOTTY
+func allENOTTY(err error) bool {
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := multi.Unwrap()
+		if len(errs) == 0 {
+			// an empty multi-error is not ENOTTY; pass it through
+			return false
+		}
+		for _, e := range errs {
+			if !allENOTTY(e) {
+				return false
+			}
+		}
+		return true
+	}
+	if next := errors.Unwrap(err); next != nil {
+		return allENOTTY(next)
+	}
+	return errors.Is(err, syscall.ENOTTY)
 }
 
 // Error logs at error level. See the package documentation for argument

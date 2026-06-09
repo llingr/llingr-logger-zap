@@ -115,6 +115,55 @@ func TestSatisfiesNexusLogger(t *testing.T) {
 	var _ nexus.Logger = zaplogger.NewSugared(zap.NewNop().Sugar())
 }
 
+// wantPanicContaining fails the test unless the deferred recover yields a panic
+// whose message names the problem. Use as: defer wantPanicContaining(t, "...").
+func wantPanicContaining(t *testing.T, substr string) {
+	t.Helper()
+	r := recover()
+	if r == nil {
+		t.Fatal("expected a panic, got none")
+	}
+	msg, ok := r.(string)
+	if !ok || !strings.Contains(msg, substr) {
+		t.Errorf("panic = %v, want a message containing %q", r, substr)
+	}
+}
+
+// TestNewNilPanicsWithClearMessage confirms New(nil) fails at construction with a
+// message that names the mistake, instead of a bare nil dereference at the first
+// log call.
+func TestNewNilPanicsWithClearMessage(t *testing.T) {
+	defer wantPanicContaining(t, "non-nil *zap.Logger")
+	zaplogger.New(nil)
+}
+
+// TestNewSugaredNilPanicsWithClearMessage is the NewSugared counterpart: without
+// the guard the nil dereference would happen inside Desugar.
+func TestNewSugaredNilPanicsWithClearMessage(t *testing.T) {
+	defer wantPanicContaining(t, "non-nil *zap.SugaredLogger")
+	zaplogger.NewSugared(nil)
+}
+
+// TestNewSugaredCallerIsApplication confirms call-site transparency survives the
+// sugared entry point: NewSugared desugars and must attribute log lines to the
+// application call site exactly as New does.
+func TestNewSugaredCallerIsApplication(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	log := zaplogger.NewSugared(zap.New(core).Sugar())
+
+	_, _, line, _ := runtime.Caller(0)
+	log.Info(context.Background(), "via sugar") // must stay directly below the line above
+	wantLine := line + 1
+
+	c := logs.All()[0].Caller
+	if !c.Defined {
+		t.Fatal("caller not captured through NewSugared")
+	}
+	if filepath.Base(c.File) != "zaplogger_test.go" || c.Line != wantLine {
+		t.Errorf("caller = %s:%d, want zaplogger_test.go:%d", c.File, c.Line, wantLine)
+	}
+}
+
 // TestCallerCapturedWithoutHostAddCaller is the proof that New owns its contract:
 // the host logger is built WITHOUT zap.AddCaller(), yet the caller is still
 // captured and still points at this test file (the call site), because New

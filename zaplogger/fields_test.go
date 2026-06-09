@@ -5,6 +5,7 @@ package zaplogger_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.uber.org/zap"
@@ -12,7 +13,8 @@ import (
 )
 
 // TestStructuredFieldsForwarded confirms the variadic args are treated as
-// key/value pairs (slog/zap *w semantics), matching nexus.DefaultLogger.
+// key/value pairs (slog / zap SugaredLogger semantics). Note this deliberately
+// differs from nexus.DefaultLogger, which printf-formats its args.
 func TestStructuredFieldsForwarded(t *testing.T) {
 	log, logs := newObserved(zapcore.DebugLevel)
 
@@ -67,6 +69,56 @@ func TestNonStringKeyMidListAdvancesByOne(t *testing.T) {
 	}
 	if fields["topic"] != "payments" {
 		t.Errorf("field topic = %v, want payments (scan did not advance past the bad key correctly)", fields["topic"])
+	}
+}
+
+// TestBareErrorGetsErrorKey confirms a bare error in key position becomes a
+// standard "error" field (zap.Error), matching zap's SugaredLogger, rather than
+// landing under !BADKEY. This is the `log.Error(ctx, msg, err)` call shape.
+func TestBareErrorGetsErrorKey(t *testing.T) {
+	log, logs := newObserved(zapcore.DebugLevel)
+
+	log.Error(context.Background(), "drain failed", errors.New("broker gone"))
+
+	fields := logs.All()[0].ContextMap()
+	if fields["error"] != "broker gone" {
+		t.Errorf(`field error = %v, want "broker gone" (bare error not given the error key)`, fields["error"])
+	}
+	if _, present := fields["!BADKEY"]; present {
+		t.Error("bare error landed under !BADKEY, want the standard error key")
+	}
+}
+
+// TestBareErrorMidListAdvancesByOne confirms a bare error that is NOT the final
+// argument consumes exactly one slot: the key/value pair after it must still
+// parse correctly.
+func TestBareErrorMidListAdvancesByOne(t *testing.T) {
+	log, logs := newObserved(zapcore.DebugLevel)
+
+	log.Error(context.Background(), "drain failed", errors.New("broker gone"), "topic", "payments")
+
+	fields := logs.All()[0].ContextMap()
+	if fields["error"] != "broker gone" {
+		t.Errorf(`field error = %v, want "broker gone"`, fields["error"])
+	}
+	if fields["topic"] != "payments" {
+		t.Errorf("field topic = %v, want payments (scan did not advance past the error correctly)", fields["topic"])
+	}
+}
+
+// TestErrorInValuePositionStaysValue confirms the error special case only applies
+// in key position: an error following a string key is that key's value.
+func TestErrorInValuePositionStaysValue(t *testing.T) {
+	log, logs := newObserved(zapcore.DebugLevel)
+
+	log.Error(context.Background(), "drain failed", "cause", errors.New("broker gone"))
+
+	fields := logs.All()[0].ContextMap()
+	if fields["cause"] != "broker gone" {
+		t.Errorf(`field cause = %v, want "broker gone"`, fields["cause"])
+	}
+	if _, present := fields["error"]; present {
+		t.Error("error in value position was hoisted to its own error field")
 	}
 }
 
