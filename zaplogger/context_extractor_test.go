@@ -66,6 +66,58 @@ func TestContextExtractorFlattensFields(t *testing.T) {
 	}
 }
 
+// traceIDExtractor pulls the test trace ID out of a context, shared by the
+// inheritance tests below.
+func traceIDExtractor(ctx context.Context) []zap.Field {
+	id, ok := ctx.Value(ctxKey{}).(string)
+	if ok {
+		return []zap.Field{zap.String("trace_id", id)}
+	}
+	return nil
+}
+
+// TestWithInheritsContextExtractor confirms the documented With behaviour: a
+// child created with bound fields keeps the parent's ContextExtractor, so its
+// lines carry both the bound field and the extracted context fields.
+func TestWithInheritsContextExtractor(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	parent := zaplogger.New(zap.New(core)).WithContextExtractor(traceIDExtractor)
+	child := parent.With("topic", "payments")
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, "trace-abc")
+	child.Info(ctx, "inherited")
+
+	fields := logs.All()[0].ContextMap()
+	if fields["trace_id"] != "trace-abc" {
+		t.Errorf("trace_id = %v, want trace-abc (With dropped the extractor)",
+			fields["trace_id"])
+	}
+	if fields["topic"] != "payments" {
+		t.Errorf("bound field topic = %v, want payments", fields["topic"])
+	}
+}
+
+// TestWithContextExtractorNilDisables confirms the documented escape hatch:
+// passing nil yields a child with extraction off, and leaves the parent's
+// extractor untouched.
+func TestWithContextExtractorNilDisables(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	parent := zaplogger.New(zap.New(core)).WithContextExtractor(traceIDExtractor)
+	child := parent.WithContextExtractor(nil)
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, "trace-abc")
+	child.Info(ctx, "extraction off")
+	parent.Info(ctx, "extraction still on")
+
+	entries := logs.All()
+	if _, present := entries[0].ContextMap()["trace_id"]; present {
+		t.Error("child logged trace_id, want extraction disabled by WithContextExtractor(nil)")
+	}
+	if entries[1].ContextMap()["trace_id"] != "trace-abc" {
+		t.Error("parent lost its extractor after a child disabled extraction")
+	}
+}
+
 // TestContextExtractorIsLazy proves the extractor does not run for an entry that
 // is dropped by the level gate, and does run (once) on one that is encoded: the
 // whole point of using zap.Inline. It uses a real JSON core because that runs

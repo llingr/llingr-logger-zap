@@ -67,11 +67,16 @@ on darwin/BSD). Genuine flush failures are always returned, and other platforms'
 errno for the same situation (Linux can return `EINVAL`) is deliberately passed
 through rather than guessed at, to avoid masking a real `EINVAL`.
 
+With a multi-sink logger (`zapcore.NewTee`) zap combines the per-core `Sync`
+errors into one. Suppression requires that *every* constituent is `ENOTTY`: if
+the console reports `ENOTTY` and a file sink reports a real fsync failure in the
+same call, the combined error is returned, not swallowed.
+
 ## Usage
 
 This package **wires an existing logger; it does not create one.** The host
 application supplies its own zap logger, configured however it likes, and you
-wrap it:
+wrap it (`New` panics if handed a nil logger):
 
 ```go
 import (
@@ -114,7 +119,16 @@ the typed fast path is preserved and the common zero-argument call (the dominant
 pattern in the llingr engine, which pre-formats its messages) costs nothing
 beyond zap's own work.
 
-A trailing key with no value, or a non-string where a key is expected, is
+A bare `error` passed where a key is expected becomes a standard `"error"`
+field (`zap.Error`), matching zap's `SugaredLogger`:
+
+```go
+log.Error(ctx, "drain failed", err) // => {... "error": "broker gone"}
+```
+
+An error in *value* position stays the value of its key
+(`log.Error(ctx, "drain failed", "cause", err)` logs it under `cause`). A
+trailing key with no value, or any other non-string where a key is expected, is
 recorded under `!BADKEY`, matching slog and zap's `SugaredLogger`.
 
 The `context.Context` argument is accepted to satisfy the interface; this

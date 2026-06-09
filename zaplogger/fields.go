@@ -11,9 +11,12 @@ const badKey = "!BADKEY"
 
 // toFields converts the nexus.Logger variadic into zap fields. It accepts native
 // zap.Field values (the typed path), loose key/value pairs (slog style), and any
-// mix of the two. A trailing key with no value, or a non-string where a key is
-// expected, is recorded under "!BADKEY", matching slog and zap's SugaredLogger.
-// An empty argument list returns nil, so the common no-field call is free.
+// mix of the two. A bare error in key position becomes a standard "error" field
+// via zap.Error, matching zap's SugaredLogger (an error in value position stays
+// the value of its key). A trailing key with no value, or any other non-string
+// where a key is expected, is recorded under "!BADKEY", matching slog and zap's
+// SugaredLogger. An empty argument list returns nil, so the common no-field call
+// is free.
 func toFields(args []any) []zap.Field {
 	if len(args) == 0 {
 		return nil
@@ -23,6 +26,15 @@ func toFields(args []any) []zap.Field {
 		f, ok := args[i].(zap.Field)
 		if ok {
 			fields = append(fields, f)
+			i++
+			continue
+		}
+		// A bare error cannot be a key; give it the standard "error" key rather
+		// than !BADKEY, as zap's SugaredLogger does. Each bare error gets its own
+		// field, so two of them produce two "error" keys.
+		err, ok := args[i].(error)
+		if ok {
+			fields = append(fields, zap.Error(err))
 			i++
 			continue
 		}

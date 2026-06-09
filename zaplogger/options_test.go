@@ -39,6 +39,28 @@ func newWithSyncErr(syncErr error, opts ...zaplogger.Option) *zaplogger.Logger {
 	return zaplogger.New(zap.New(core), opts...)
 }
 
+// newTeeWithSyncErrs builds a Logger over a tee of two cores whose sinks return
+// the given Sync errors, mirroring the common console + file production setup.
+// zap combines the per-core errors into one multi-error.
+func newTeeWithSyncErrs(errA, errB error) *zaplogger.Logger {
+	enc := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	core := zapcore.NewTee(
+		zapcore.NewCore(enc, zapcore.AddSync(syncWriter{syncErr: errA}), zapcore.DebugLevel),
+		zapcore.NewCore(enc, zapcore.AddSync(syncWriter{syncErr: errB}), zapcore.DebugLevel),
+	)
+	return zaplogger.New(zap.New(core))
+}
+
+// enottyErr returns the error shape a real console sink produces: an
+// *os.PathError wrapping syscall.ENOTTY.
+func enottyErr(path string) error {
+	return &os.PathError{
+		Op:   "sync",
+		Path: path,
+		Err:  syscall.ENOTTY,
+	}
+}
+
 // TestPreserveHostCallerRespectsCallerOff confirms PreserveHostCaller leaves a
 // host that did NOT enable caller capture with caller still off: the adapter does
 // not force it on. This is the escape hatch for hosts that disabled caller on
@@ -78,12 +100,7 @@ func TestPreserveHostCallerKeepsSkipWhenHostEnabled(t *testing.T) {
 // TestSyncSuppressesENOTTYByDefault confirms the default Sync swallows the ENOTTY
 // error a console sink returns, so a clean shutdown reports no spurious failure.
 func TestSyncSuppressesENOTTYByDefault(t *testing.T) {
-	enotty := &os.PathError{
-		Op:   "sync",
-		Path: "/dev/stderr",
-		Err:  syscall.ENOTTY,
-	}
-	log := newWithSyncErr(enotty)
+	log := newWithSyncErr(enottyErr("/dev/stderr"))
 
 	err := log.Sync()
 	if err != nil {
@@ -93,12 +110,7 @@ func TestSyncSuppressesENOTTYByDefault(t *testing.T) {
 
 // TestSyncPassthroughENOTTYReturnsRaw confirms the opt-out returns the raw ENOTTY.
 func TestSyncPassthroughENOTTYReturnsRaw(t *testing.T) {
-	enotty := &os.PathError{
-		Op:   "sync",
-		Path: "/dev/stderr",
-		Err:  syscall.ENOTTY,
-	}
-	log := newWithSyncErr(enotty, zaplogger.SyncPassthroughENOTTY())
+	log := newWithSyncErr(enottyErr("/dev/stderr"), zaplogger.SyncPassthroughENOTTY())
 
 	err := log.Sync()
 	if !errors.Is(err, syscall.ENOTTY) {
@@ -116,5 +128,52 @@ func TestSyncPassesThroughRealErrors(t *testing.T) {
 	err := log.Sync()
 	if !errors.Is(err, boom) {
 		t.Errorf("Sync() = %v, want the real error passed through", err)
+	}
+}
+
+// TestSyncTeeRealErrorNotMaskedByENOTTY is the multi-sink guarantee: with a tee
+// of a console (ENOTTY) and a file sink whose fsync genuinely fails, the combined
+// error must be returned. A bare errors.Is(err, ENOTTY) would match the console
+// branch and swallow the file failure with it.
+func TestSyncTeeRealErrorNotMaskedByENOTTY(t *testing.T) {
+	boom := errors.New("disk on fire")
+	log := newTeeWithSyncErrs(enottyErr("/dev/stderr"), boom)
+
+	err := log.Sync()
+	if err == nil {
+		t.Fatal("Sync() = nil, the console ENOTTY masked a real flush failure")
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("Sync() = %v, want it to carry the real error", err)
+	}
+}
+
+// TestSyncTeeAllENOTTYSuppressed confirms suppression still works for multi-sink
+// loggers when every sink reports ENOTTY (a tee of stdout and stderr, say).
+func TestSyncTeeAllENOTTYSuppressed(t *testing.T) {
+	log := newTeeWithSyncErrs(enottyErr("/dev/stdout"), enottyErr("/dev/stderr"))
+
+	err := log.Sync()
+	if err != nil {
+		t.Errorf("Sync() = %v, want nil (every sink reported ENOTTY)", err)
+	}
+}
+
+// childlessMulti is an error claiming the multi-error shape with no constituents.
+// Nothing real produces this; it pins down the conservative choice that such an
+// error is not treated as ENOTTY and passes through.
+type childlessMulti struct{}
+
+func (childlessMulti) Error() string   { return "childless multi-error" }
+func (childlessMulti) Unwrap() []error { return nil }
+
+// TestSyncEmptyMultiErrorPassesThrough confirms an empty multi-error is not
+// vacuously "all ENOTTY": it is returned, not suppressed.
+func TestSyncEmptyMultiErrorPassesThrough(t *testing.T) {
+	log := newWithSyncErr(childlessMulti{})
+
+	err := log.Sync()
+	if err == nil {
+		t.Error("Sync() = nil, want the childless multi-error passed through")
 	}
 }
