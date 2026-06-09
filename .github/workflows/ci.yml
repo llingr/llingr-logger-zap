@@ -38,15 +38,17 @@ jobs:
           cache: true
       - name: Tests
         run: go test -race -coverprofile=coverage.out -coverpkg=./zaplogger/... ./...
-      - name: Coverage summary
+      # The README carries a static "coverage 100%" badge; this gate keeps
+      # that badge honest. If coverage legitimately drops, change both.
+      - name: Coverage gate (100%)
         run: |
           go tool cover -func=coverage.out | tail -5
           pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}')
           echo "**Total coverage: ${pct}**" >> "$GITHUB_STEP_SUMMARY"
-      - uses: codecov/codecov-action@v6
-        with:
-          files: coverage.out
-          fail_ci_if_error: false
+          if [ "$pct" != "100.0%" ]; then
+            echo "Coverage is ${pct}, below the gated 100%" >&2
+            exit 1
+          fi
 
   vulncheck:
     name: govulncheck
