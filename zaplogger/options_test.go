@@ -51,13 +51,23 @@ func newTeeWithSyncErrs(errA, errB error) *zaplogger.Logger {
 	return zaplogger.New(zap.New(core))
 }
 
-// enottyErr returns the error shape a real console sink produces: an
+// enottyErr returns the error shape a darwin/BSD console sink produces: an
 // *os.PathError wrapping syscall.ENOTTY.
 func enottyErr(path string) error {
 	return &os.PathError{
 		Op:   "sync",
 		Path: path,
 		Err:  syscall.ENOTTY,
+	}
+}
+
+// einvalErr returns the error shape a Linux console or pipe sink produces: an
+// *os.PathError wrapping syscall.EINVAL.
+func einvalErr(path string) error {
+	return &os.PathError{
+		Op:   "sync",
+		Path: path,
+		Err:  syscall.EINVAL,
 	}
 }
 
@@ -108,13 +118,65 @@ func TestSyncSuppressesENOTTYByDefault(t *testing.T) {
 	}
 }
 
-// TestSyncPassthroughENOTTYReturnsRaw confirms the opt-out returns the raw ENOTTY.
-func TestSyncPassthroughENOTTYReturnsRaw(t *testing.T) {
-	log := newWithSyncErr(enottyErr("/dev/stderr"), zaplogger.SyncPassthroughENOTTY())
+// TestSyncReturnConsoleErrorsReturnsRaw confirms the opt-out returns the raw
+// console error verbatim.
+func TestSyncReturnConsoleErrorsReturnsRaw(t *testing.T) {
+	log := newWithSyncErr(enottyErr("/dev/stderr"), zaplogger.SyncReturnConsoleErrors())
 
 	err := log.Sync()
 	if !errors.Is(err, syscall.ENOTTY) {
 		t.Errorf("Sync() = %v, want the raw ENOTTY error", err)
+	}
+}
+
+// TestSyncSuppressesConsoleEINVALByDefault covers the Linux console shape: fsync
+// on /dev/stdout or /dev/stderr (a terminal, or a pipe in a container) returns
+// EINVAL, which is no more a real flush failure than darwin's ENOTTY.
+func TestSyncSuppressesConsoleEINVALByDefault(t *testing.T) {
+	log := newWithSyncErr(einvalErr("/dev/stdout"))
+
+	err := log.Sync()
+	if err != nil {
+		t.Errorf("Sync() = %v, want nil (console EINVAL should be suppressed)", err)
+	}
+}
+
+// TestSyncEINVALFromRealPathPassesThrough confirms the EINVAL suppression is
+// path-constrained: the same errno from a non-console sink is a genuine error
+// and must be returned.
+func TestSyncEINVALFromRealPathPassesThrough(t *testing.T) {
+	log := newWithSyncErr(einvalErr("/var/log/app.log"))
+
+	err := log.Sync()
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("Sync() = %v, want the EINVAL from a real sink passed through", err)
+	}
+}
+
+// TestSyncSuppressesBareENOTTYErrno covers a sink that returns the errno without
+// a PathError wrapper; it is still recognisably the console-sync error.
+func TestSyncSuppressesBareENOTTYErrno(t *testing.T) {
+	log := newWithSyncErr(syscall.ENOTTY)
+
+	err := log.Sync()
+	if err != nil {
+		t.Errorf("Sync() = %v, want nil (bare ENOTTY errno should be suppressed)", err)
+	}
+}
+
+// TestSyncPathErrorWithOtherErrnoPassesThrough confirms a PathError carrying an
+// errno outside the console family (EBADF here) is returned even on a console
+// path.
+func TestSyncPathErrorWithOtherErrnoPassesThrough(t *testing.T) {
+	log := newWithSyncErr(&os.PathError{
+		Op:   "sync",
+		Path: "/dev/stderr",
+		Err:  syscall.EBADF,
+	})
+
+	err := log.Sync()
+	if !errors.Is(err, syscall.EBADF) {
+		t.Errorf("Sync() = %v, want the EBADF passed through", err)
 	}
 }
 
