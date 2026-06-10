@@ -49,29 +49,30 @@ log := zaplogger.New(z, zaplogger.PreserveHostCaller())
 The wrapper frame is still skipped, so if the host has caller capture on you
 still get the application's call site; if the host turned it off, it stays off.
 
-## Sync and the console ENOTTY error
+## Sync and console errors
 
 `Sync()` flushes buffered entries; call it before the process exits. zap's
-`Sync` runs `fsync` on the sink, and when the sink is a console (`os.Stdout` /
-`os.Stderr`) the kernel rejects that with `ENOTTY` ("inappropriate ioctl for
-device"). That is not a real flush failure, just zap asking a character device
-to do something it cannot, so by default this wrapper treats that one error as
-success and a clean shutdown reports nothing.
+`Sync` runs `fsync` on the sink, and a console sink cannot fsync: the kernel
+rejects the call. That is not a real flush failure, just zap asking a device
+that cannot flush to do so, so by default this wrapper treats those errors as
+success and a clean shutdown reports nothing. Two shapes are recognised:
 
-Pass `zaplogger.SyncPassthroughENOTTY()` to get zap's error back verbatim:
+- `ENOTTY` ("inappropriate ioctl for device") — the darwin/BSD console error.
+- `EINVAL`, but only when the failing path is `/dev/stdout` or `/dev/stderr` —
+  the Linux error for a console, or for a pipe on the standard streams (the
+  usual case in containers, where the runtime collects stdout). An `EINVAL`
+  from any other path is a genuine error and is returned.
+
+Pass `zaplogger.SyncReturnConsoleErrors()` to get zap's error back verbatim:
 
 ```go
-log := zaplogger.New(z, zaplogger.SyncPassthroughENOTTY())
+log := zaplogger.New(z, zaplogger.SyncReturnConsoleErrors())
 ```
 
-Suppression is narrow and targets `ENOTTY` specifically (the console-sync error
-on darwin/BSD). Genuine flush failures are always returned, and other platforms'
-errno for the same situation (Linux can return `EINVAL`) is deliberately passed
-through rather than guessed at, to avoid masking a real `EINVAL`.
-
-With a multi-sink logger (`zapcore.NewTee`) zap combines the per-core `Sync`
-errors into one. Suppression requires that *every* constituent is `ENOTTY`: if
-the console reports `ENOTTY` and a file sink reports a real fsync failure in the
+Genuine flush failures are always returned. With a multi-sink logger
+(`zapcore.NewTee`) zap combines the per-core `Sync` errors into one;
+suppression requires that *every* constituent is a console error, so if the
+console reports `ENOTTY` and a file sink reports a real fsync failure in the
 same call, the combined error is returned, not swallowed.
 
 ## Usage
@@ -182,7 +183,7 @@ function rather than built in. Pass `nil` to disable it on a child logger.
 | Option                    | Effect                                                                                   |
 |---------------------------|------------------------------------------------------------------------------------------|
 | `PreserveHostCaller()`    | Do not force `zap.AddCaller()`; keep the host's caller setting (wrapper skip still used) |
-| `SyncPassthroughENOTTY()` | Return zap's raw `Sync` error instead of suppressing the console `ENOTTY`                |
+| `SyncReturnConsoleErrors()` | Return zap's raw `Sync` error instead of suppressing console fsync errors              |
 
 Methods: `Error`, `Warn`, `Info`, `Debug` (the `nexus.Logger` interface), plus
 `With(args ...any) *Logger`,

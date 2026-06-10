@@ -4,7 +4,7 @@
 package zaplogger
 
 // Option configures a Logger at construction time, passed to New or NewSugared.
-// See PreserveHostCaller and SyncPassthroughENOTTY.
+// See PreserveHostCaller and SyncReturnConsoleErrors.
 type Option func(*Logger)
 
 // PreserveHostCaller leaves the host logger's caller configuration exactly as the
@@ -19,12 +19,14 @@ func PreserveHostCaller() Option {
 	}
 }
 
-// SyncPassthroughENOTTY makes Sync return zap's error verbatim, including the
-// ENOTTY ("inappropriate ioctl for device") error that a console sink
-// (stdout/stderr) returns from its underlying fsync. Without it, Sync treats that
-// specific error as success, since it is not a real flush failure. See Sync.
-func SyncPassthroughENOTTY() Option {
+// SyncReturnConsoleErrors makes Sync return zap's error verbatim instead of
+// suppressing the errors a console sink produces from fsync: ENOTTY on
+// darwin/BSD, and EINVAL on Linux when the sink is /dev/stdout or /dev/stderr.
+// Neither indicates a real flush failure, which is why Sync swallows them by
+// default; pass this option if the host wants to make that call itself. See
+// Sync.
+func SyncReturnConsoleErrors() Option {
 	return func(l *Logger) {
-		l.syncRawENOTTY = true
+		l.returnConsoleErrors = true
 	}
 }
