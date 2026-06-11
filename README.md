@@ -52,27 +52,34 @@ still get the application's call site; if the host turned it off, it stays off.
 ## Sync and console errors
 
 `Sync()` flushes buffered entries; call it before the process exits. zap's
-`Sync` runs `fsync` on the sink, and a console sink cannot fsync: the kernel
-rejects the call. That is not a real flush failure, just zap asking a device
-that cannot flush to do so, so by default this wrapper treats those errors as
-success and a clean shutdown reports nothing. Two shapes are recognised:
+`Sync` runs `fsync` on the sink, and some sinks cannot be synchronized: a
+console, pipe, FIFO, tty, or socket. The kernel rejects the call, but no data
+was lost, so by default this wrapper treats those errors as success and a clean
+shutdown reports nothing. Two shapes are recognised:
 
-- `ENOTTY` ("inappropriate ioctl for device") — the darwin/BSD console error.
-- `EINVAL`, but only when the failing path is `/dev/stdout` or `/dev/stderr` —
-  the Linux error for a console, or for a pipe on the standard streams (the
-  usual case in containers, where the runtime collects stdout). An `EINVAL`
-  from any other path is a genuine error and is returned.
+- `ENOTTY` ("inappropriate ioctl for device"): the darwin/BSD form.
+- `EINVAL` on a `sync` operation: the Linux form. Per `fsync(2)`, `EINVAL` means
+  the descriptor type does not support synchronization (a console, a pipe in a
+  container, a tty, a `/dev/fd/N` alias, a FIFO). Suppression keys on the
+  operation, not the path, so it covers every such sink rather than only
+  `/dev/stdout` and `/dev/stderr`. Genuine flush failures come back as `EIO`,
+  `ENOSPC`, or `EDQUOT` and are returned.
 
-Pass `zaplogger.SyncReturnConsoleErrors()` to get zap's error back verbatim:
+One consequence: a log file on a filesystem that does not implement `fsync`
+(some FUSE mounts) also returns `sync`-`EINVAL` and is suppressed. That hides
+"this file cannot be made durable", though not "data was lost", which is the
+same condition the suppression exists for.
+
+Pass `zaplogger.PreserveHarmlessSyncErrors()` to get zap's error back verbatim:
 
 ```go
-log := zaplogger.New(z, zaplogger.SyncReturnConsoleErrors())
+log := zaplogger.New(z, zaplogger.PreserveHarmlessSyncErrors())
 ```
 
 Genuine flush failures are always returned. With a multi-sink logger
 (`zapcore.NewTee`) zap combines the per-core `Sync` errors into one;
-suppression requires that *every* constituent is a console error, so if the
-console reports `ENOTTY` and a file sink reports a real fsync failure in the
+suppression requires that *every* constituent is a harmless sync error, so if
+the console reports `ENOTTY` and a file sink reports a real fsync failure in the
 same call, the combined error is returned, not swallowed.
 
 ## Usage
@@ -183,7 +190,7 @@ function rather than built in. Pass `nil` to disable it on a child logger.
 | Option                    | Effect                                                                                   |
 |---------------------------|------------------------------------------------------------------------------------------|
 | `PreserveHostCaller()`    | Do not force `zap.AddCaller()`; keep the host's caller setting (wrapper skip still used) |
-| `SyncReturnConsoleErrors()` | Return zap's raw `Sync` error instead of suppressing console fsync errors              |
+| `PreserveHarmlessSyncErrors()` | Return zap's raw `Sync` error instead of swallowing the harmless fsync errors        |
 
 Methods: `Error`, `Warn`, `Info`, `Debug` (the `nexus.Logger` interface), plus
 `With(args ...any) *Logger`,

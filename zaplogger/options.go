@@ -4,7 +4,7 @@
 package zaplogger
 
 // Option configures a Logger at construction time, passed to New or NewSugared.
-// See PreserveHostCaller and SyncReturnConsoleErrors.
+// See PreserveHostCaller and PreserveHarmlessSyncErrors.
 type Option func(*Logger)
 
 // PreserveHostCaller leaves the host logger's caller configuration exactly as the
@@ -19,14 +19,21 @@ func PreserveHostCaller() Option {
 	}
 }
 
-// SyncReturnConsoleErrors makes Sync return zap's error verbatim instead of
-// suppressing the errors a console sink produces from fsync: ENOTTY on
-// darwin/BSD, and EINVAL on Linux when the sink is /dev/stdout or /dev/stderr.
-// Neither indicates a real flush failure, which is why Sync swallows them by
-// default; pass this option if the host wants to make that call itself. See
-// Sync.
-func SyncReturnConsoleErrors() Option {
+// PreserveHarmlessSyncErrors makes Sync return zap's error verbatim instead of
+// swallowing the harmless ones it discards by default.
+//
+// Some sinks cannot be fsync'd: a console, pipe, FIFO, tty, or socket. Calling
+// fsync on them fails, but nothing was lost, so by default Sync treats that
+// family as success (see Sync). Pass this option to receive those errors
+// unfiltered, for a host that would rather inspect or report them itself, or that
+// does not want the adapter making the call for it.
+//
+// The family, for those who want the detail: ENOTTY on darwin/BSD, and EINVAL on
+// a sync operation on Linux (per fsync(2), EINVAL means the descriptor type does
+// not support synchronization). Genuine flush failures (EIO, ENOSPC, EDQUOT) are
+// returned with or without this option.
+func PreserveHarmlessSyncErrors() Option {
 	return func(l *Logger) {
-		l.returnConsoleErrors = true
+		l.preserveHarmlessSyncErrors = true
 	}
 }
