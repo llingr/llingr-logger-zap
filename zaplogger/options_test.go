@@ -118,10 +118,10 @@ func TestSyncSuppressesENOTTYByDefault(t *testing.T) {
 	}
 }
 
-// TestSyncReturnConsoleErrorsReturnsRaw confirms the opt-out returns the raw
-// console error verbatim.
-func TestSyncReturnConsoleErrorsReturnsRaw(t *testing.T) {
-	log := newWithSyncErr(enottyErr("/dev/stderr"), zaplogger.SyncReturnConsoleErrors())
+// TestPreserveHarmlessSyncErrorsReturnsRaw confirms the opt-out returns the raw
+// sync error verbatim instead of swallowing it.
+func TestPreserveHarmlessSyncErrorsReturnsRaw(t *testing.T) {
+	log := newWithSyncErr(enottyErr("/dev/stderr"), zaplogger.PreserveHarmlessSyncErrors())
 
 	err := log.Sync()
 	if !errors.Is(err, syscall.ENOTTY) {
@@ -141,15 +141,78 @@ func TestSyncSuppressesConsoleEINVALByDefault(t *testing.T) {
 	}
 }
 
-// TestSyncEINVALFromRealPathPassesThrough confirms the EINVAL suppression is
-// path-constrained: the same errno from a non-console sink is a genuine error
-// and must be returned.
-func TestSyncEINVALFromRealPathPassesThrough(t *testing.T) {
-	log := newWithSyncErr(einvalErr("/var/log/app.log"))
+// TestSyncSuppressesNonConsoleSyncEINVAL covers the family the old path allowlist
+// missed: fsync on any descriptor that cannot be synchronized (here a /dev/fd
+// alias, but equally a tty or FIFO) returns sync-EINVAL, which is harmless and
+// suppressed whatever the path.
+func TestSyncSuppressesNonConsoleSyncEINVAL(t *testing.T) {
+	log := newWithSyncErr(einvalErr("/dev/fd/1"))
+
+	err := log.Sync()
+	if err != nil {
+		t.Errorf("Sync() = %v, want nil (sync-EINVAL is harmless on any unsyncable sink)", err)
+	}
+}
+
+// TestSyncRealFlushFailurePassesThrough confirms a genuine flush failure on a
+// sync operation (EIO here, as a failing disk reports) is returned, not masked.
+func TestSyncRealFlushFailurePassesThrough(t *testing.T) {
+	log := newWithSyncErr(&os.PathError{
+		Op:   "sync",
+		Path: "/var/log/app.log",
+		Err:  syscall.EIO,
+	})
+
+	err := log.Sync()
+	if !errors.Is(err, syscall.EIO) {
+		t.Errorf("Sync() = %v, want the EIO flush failure passed through", err)
+	}
+}
+
+// TestSyncEINVALFromNonSyncOpPassesThrough confirms suppression is narrow on the
+// operation: an EINVAL that reaches Sync from a non-sync operation (a buffered
+// sink surfacing a deferred write error, say) is a real failure and is returned,
+// even on a console path.
+func TestSyncEINVALFromNonSyncOpPassesThrough(t *testing.T) {
+	log := newWithSyncErr(&os.PathError{
+		Op:   "write",
+		Path: "/dev/stdout",
+		Err:  syscall.EINVAL,
+	})
 
 	err := log.Sync()
 	if !errors.Is(err, syscall.EINVAL) {
-		t.Errorf("Sync() = %v, want the EINVAL from a real sink passed through", err)
+		t.Errorf("Sync() = %v, want the non-sync EINVAL passed through", err)
+	}
+}
+
+// TestSyncBareEINVALPassesThrough confirms a bare EINVAL errno, which carries no
+// operation to confirm it came from fsync, is not suppressed.
+func TestSyncBareEINVALPassesThrough(t *testing.T) {
+	log := newWithSyncErr(syscall.EINVAL)
+
+	err := log.Sync()
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("Sync() = %v, want the bare EINVAL passed through", err)
+	}
+}
+
+// TestSyncPathErrorJoinedErrnoPassesThrough pins the node-local guarantee: a
+// PathError whose Err pairs a harmless errno with a real error must not be
+// suppressed. os.File.Sync never produces this shape (Err is a bare errno), so
+// the direct == comparison both matches every real shape and refuses to see into
+// the join the way errors.Is would, keeping the every-constituent promise honest.
+func TestSyncPathErrorJoinedErrnoPassesThrough(t *testing.T) {
+	boom := errors.New("disk on fire")
+	log := newWithSyncErr(&os.PathError{
+		Op:   "sync",
+		Path: "/dev/stdout",
+		Err:  errors.Join(syscall.EINVAL, boom),
+	})
+
+	err := log.Sync()
+	if !errors.Is(err, boom) {
+		t.Errorf("Sync() = %v, want the real error passed through, not swallowed via the joined EINVAL", err)
 	}
 }
 
