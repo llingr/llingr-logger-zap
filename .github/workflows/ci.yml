@@ -22,6 +22,8 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      - name: go.mod and go.sum are tidy
+        run: go mod tidy -diff
       - run: go build ./...
       - run: go vet ./...
 
